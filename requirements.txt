@@ -3,3 +3,25 @@
 # Manually managing azure-functions-worker may cause unexpected issues
 
 azure-functions
+
+
+# Azure
+azure-functions==1.23.0          # ya la instala Azure, pero déjala
+
+# Google Drive
+google-auth==2.40.3
+google-auth-oauthlib==1.2.2
+google-api-python-client==2.173.0
+google-auth-httplib2==0.2.0
+
+# (si usás otra lib agrégala aquí)
+
+
+azure-functions==1.23.0
+
+# Google Drive API
+google-auth==2.40.3
+google-auth-oauthlib==1.2.2
+google-api-python-client==2.173.0
+google-auth-httplib2==0.2.0
+
