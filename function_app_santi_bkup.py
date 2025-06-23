@@ -1,16 +1,19 @@
+# function_app.py   (raíz del repo)
+
 import azure.functions as func
 import io, re, logging, datetime as dt
-import json
-from bsp2 import get_exchange_rate_for_date  # espera un `datetime.date`
 from datetime import date, timedelta
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
+# ─── BSP2 ────────────────────────────────────────────────────────
+# Asegurate de que bsp2.py esté en tu PYTHONPATH
+from bsp2 import get_exchange_rate_for_date  # espera un `datetime.date`
 
-app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
-
+# ─────────────────── ⚙️  Azure Functions app ────────────────────
+app = func.FunctionApp()
 
 # ─────────────────── 🔐  Google Drive ────────────────────────────
 GOOGLE_CREDENTIALS_PATH = "credentials.json"
@@ -21,7 +24,6 @@ credentials = service_account.Credentials.from_service_account_file(
     GOOGLE_CREDENTIALS_PATH, scopes=SCOPES
 )
 drive = build("drive", "v3", credentials=credentials)
-
 
 # ─────────────────── 📄 Nombre de archivo secuencial ────────────
 def next_filename() -> str:
@@ -41,30 +43,21 @@ def upload_to_drive(name: str, content: str) -> str:
     file  = drive.files().create(body=meta, media_body=media, fields="id").execute()
     return file["id"]
 
-
-@app.route(route="http_trigger")
-def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('Python HTTP trigger function processed a request.')
-
+# ─────────────────── 🌐 HTTP Trigger ────────────────────────────
+@app.function_name(name="httpexample")
+@app.route(route="httpexample", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
+def http_example(req: func.HttpRequest) -> func.HttpResponse:
+    # 1️⃣ JSON → dict
     try:
-        req_body = req.get_json()
-    except ValueError:
-        return func.HttpResponse(
-            "Invalid JSON",
-            status_code=400
-        )
+        data = req.get_json()
+    except Exception:
+        return func.HttpResponse("JSON inválido", status_code=400)
 
-    # Espera un payload con una lista bajo la clave 'posting'
-    if not isinstance(req_body, dict) or 'posting' not in req_body or not isinstance(req_body['posting'], list):
-        return func.HttpResponse(
-            "Invalid payload: expected a JSON object with a 'posting' list",
-            status_code=400
-        )
+    posting = data.get("posting") or []
+    if not posting:
+        return func.HttpResponse("El array 'posting' no puede estar vacío", status_code=400)
 
-    posting = req_body['posting']
-
-    # Comienzo de la logica
-    # 2️⃣ Fecha y tipo de cambio - La fehca es unica por factura por lo que viene misma fecha en todas las lineas, tomo la primera
+    # 2️⃣ Fecha y tipo de cambio
     fecha_str = posting[0].get("fecha") or dt.date.today().isoformat()
     try:
         # ★ FIX → convertir el string ISO a objeto date
@@ -77,7 +70,7 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
     except RuntimeError as err:
         return func.HttpResponse(f"Error al obtener TC: {err}", status_code=502)
 
-    # 3️⃣ Agrego encabezados encabezados
+    # 3️⃣ Encabezados
     proveedor_id  = posting[0].get("proveedor id", "000000")
     proveedor_nom = posting[0].get("proveedor nombre", "SIN NOMBRE").replace("\n", " ")
     proveedor_inf = f"{proveedor_id} {proveedor_nom}".strip()
@@ -86,7 +79,7 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
     buf.write(f"L|{fecha_str}|GASTO|{tc}\n")
     buf.write(f"A|123| |{tc}|-{proveedor_inf}\n")
 
-    # 4️⃣ Detalles por linea
+    # 4️⃣ Detalles
     for item in posting:
         fila = [
             "R",
@@ -100,12 +93,20 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
         ]
         buf.write("|".join(fila) + "|\n")
 
-    # 5️⃣ Subir a Drive
+    # 5️⃣ Subir a Drive y responder
     file_id = upload_to_drive(next_filename(), buf.getvalue())
+    
+    return func.HttpResponse(f"TXT subido a Drive (ID: {file_id})", status_code=200)
 
-    # 6️⃣ Respuesta
-    return func.HttpResponse(
-        json.dumps(req_body),
-        status_code=200,
-        mimetype="application/json"
-    )
+# ─────────────────── 🏃 Ejecutar local para pruebas puntuales ───
+if __name__ == "__main__":
+    hoy = date.today()
+    hace_30_dias = hoy - timedelta(days=30)
+    print("Hoy:", hoy)
+    print("Hace 30 días:", hace_30_dias)
+
+    try:
+        tc = get_exchange_rate_for_date(hace_30_dias)
+        print("TCV hace 30 días:", tc)
+    except RuntimeError as e:
+        print("Error:", e)

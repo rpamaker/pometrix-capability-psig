@@ -15,5 +15,11 @@ https://learn.microsoft.com/en-us/azure/azure-functions/create-first-function-cl
 
 Se puede debugear tambien
 
+# Deploy
+func azure functionapp publish capability-psig
+
 # 4 URL para probar luego de deploy
-https://capability-demo.azurewebsites.net/api/http_trigger
+https://capability-psig.azurewebsites.net/api/http_trigger
+
+
+
