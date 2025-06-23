@@ -52,3 +52,4 @@ __azurite_db*__.json
 credentials.json
 /hist
 .DS_Store
+/output_txt
