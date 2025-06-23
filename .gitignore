@@ -11,6 +11,7 @@ Publish
 *.Cache
 project.lock.json
 
+/.vscode
 /packages
 /TestResults
 
@@ -49,3 +50,5 @@ __azurite_db*__.json
 
 
 credentials.json
+/hist
+.DS_Store

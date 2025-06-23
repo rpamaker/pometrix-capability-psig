@@ -1,97 +1,85 @@
+# function_app.py   (raíz del repo)
+
 import azure.functions as func
-import json, io, logging, re
+import io, re, logging, datetime as dt
+from datetime import date, timedelta
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
+# ─── BSP2 ────────────────────────────────────────────────────────
+# Asegurate de que bsp2.py esté en tu PYTHONPATH
+from bsp2 import get_exchange_rate_for_date  # espera un `datetime.date`
+
+# ─────────────────── ⚙️  Azure Functions app ────────────────────
 app = func.FunctionApp()
 
-# ────────────────────────
-# ⚙️  CONFIGURACIÓN
-# ────────────────────────
-GOOGLE_CREDENTIALS_PATH = "credentials.json"                 # ruta al .json de servicio
-DRIVE_FOLDER_ID = "1Abz1Ngv5WrFaKkURXTeMYW6nrmBo9DFP"       # ID de la carpeta destino
+# ─────────────────── 🔐  Google Drive ────────────────────────────
+GOOGLE_CREDENTIALS_PATH = "credentials.json"
+DRIVE_FOLDER_ID        = "1Abz1Ngv5WrFaKkURXTeMYW6nrmBo9DFP"
 
-# ────────────────────────
-# 🔐 AUTENTICACIÓN GOOGLE
-# ────────────────────────
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+SCOPES      = ["https://www.googleapis.com/auth/drive.file"]
 credentials = service_account.Credentials.from_service_account_file(
     GOOGLE_CREDENTIALS_PATH, scopes=SCOPES
 )
-drive_service = build('drive', 'v3', credentials=credentials)
+drive = build("drive", "v3", credentials=credentials)
 
-# ────────────────────────
-# 📄 PRÓXIMO NOMBRE DISPONIBLE
-# ────────────────────────
-def get_next_filename() -> str:
-    """
-    Devuelve 'FactXXXX.txt' con el siguiente número disponible.
-    Lee los nombres que ya existen en la carpeta de Drive.
-    """
-    query = (
-        f"'{DRIVE_FOLDER_ID}' in parents and "
-        "name contains 'Fact' and name contains '.txt' and trashed = false"
-    )
-    res = drive_service.files().list(
-        q=query,
-        spaces='drive',
-        fields='files(name)',
-        pageSize=1000        # subí si la carpeta se hace enorme
-    ).execute()
-
+# ─────────────────── 📄 Nombre de archivo secuencial ────────────
+def next_filename() -> str:
+    q = f"'{DRIVE_FOLDER_ID}' in parents and name contains 'Fact' and trashed=false"
+    files = drive.files().list(q=q, fields="files(name)", pageSize=1000).execute()
     nums = [
         int(m.group(1))
-        for f in res.get("files", [])
-        if (m := re.search(r"Fact(\d+)\.txt$", f["name"]))
+        for f in files.get("files", [])
+        if (m := re.search(r"Fact(\d{4})\.txt$", f["name"]))
     ]
-    next_n = max(nums) + 1 if nums else 1
-    return f"Fact{next_n:04d}.txt"
+    return f"Fact{(max(nums) + 1 if nums else 1):04d}.txt"
 
-# ────────────────────────
-# ☁️ SUBIR A DRIVE
-# ────────────────────────
-def upload_to_drive(content: str, filename: str) -> str:
-    media = MediaIoBaseUpload(
-        io.BytesIO(content.encode('utf-8')),
-        mimetype='text/plain',
-        resumable=False
-    )
-    file_metadata = {
-        'name': filename,
-        'parents': [DRIVE_FOLDER_ID]
-    }
-    file = drive_service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields='id'
-    ).execute()
+# ─────────────────── ☁️ Subir archivo a Drive ──────────────────
+def upload_to_drive(name: str, content: str) -> str:
+    media = MediaIoBaseUpload(io.BytesIO(content.encode()), mimetype="text/plain")
+    meta  = {"name": name, "parents": [DRIVE_FOLDER_ID]}
+    file  = drive.files().create(body=meta, media_body=media, fields="id").execute()
     return file["id"]
 
-# ────────────────────────
-# 🌐 ENDPOINT HTTP
-# ────────────────────────
+# ─────────────────── 🌐 HTTP Trigger ────────────────────────────
 @app.function_name(name="httpexample")
 @app.route(route="httpexample", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def http_example(req: func.HttpRequest) -> func.HttpResponse:
+    # 1️⃣ JSON → dict
     try:
         data = req.get_json()
     except Exception:
-        return func.HttpResponse("Invalid JSON", status_code=400)
+        return func.HttpResponse("JSON inválido", status_code=400)
 
-    posting = data.get("posting")
+    posting = data.get("posting") or []
     if not posting:
         return func.HttpResponse("El array 'posting' no puede estar vacío", status_code=400)
 
-    fecha = posting[0].get("fecha", "2025-01-01")
-    proveedor_id = posting[0].get("proveedor id", "000000")
-    proveedor_nombre = posting[0].get("proveedor nombre", "SIN NOMBRE").replace("\n", " ")
-    proveedor_info = f"{proveedor_id} {proveedor_nombre}".strip()
+    # 2️⃣ Fecha y tipo de cambio
+    fecha_str = posting[0].get("fecha") or dt.date.today().isoformat()
+    try:
+        # ★ FIX → convertir el string ISO a objeto date
+        fecha_date = dt.datetime.strptime(fecha_str.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        return func.HttpResponse("Formato de fecha inválido (use YYYY-MM-DD)", status_code=400)
 
-    buffer = io.StringIO()
-    buffer.write(f"L|{fecha}|GASTO|0\n")
-    buffer.write(f"A|123| |38.50|-{proveedor_info}\n")
+    try:
+        tc = get_exchange_rate_for_date(fecha_date)  # bsp2 espera `date`
+    except RuntimeError as err:
+        return func.HttpResponse(f"Error al obtener TC: {err}", status_code=502)
 
+    # 3️⃣ Encabezados
+    proveedor_id  = posting[0].get("proveedor id", "000000")
+    proveedor_nom = posting[0].get("proveedor nombre", "SIN NOMBRE").replace("\n", " ")
+    proveedor_inf = f"{proveedor_id} {proveedor_nom}".strip()
+
+    buf = io.StringIO()
+    buf.write(f"L|{fecha_str}|GASTO|{tc}\n")
+    buf.write(f"A|123| |{tc}|-{proveedor_inf}\n")
+
+    # 4️⃣ Detalles
     for item in posting:
         fila = [
             "R",
@@ -99,19 +87,25 @@ def http_example(req: func.HttpRequest) -> func.HttpResponse:
             item.get("Descripcion", "").replace("\n", " "),
             item.get("D/H", ""),
             str(item.get("Monto", "")),
-            "", "",
-            item.get("centroDeCosto", "")
+            "",
+            "",
+            item.get("centroDeCosto", ""),
         ]
-        buffer.write("|".join(fila) + "|\n")
+        buf.write("|".join(fila) + "|\n")
 
-    txt_content = buffer.getvalue()
-    buffer.close()
+    # 5️⃣ Subir a Drive y responder
+    file_id = upload_to_drive(next_filename(), buf.getvalue())
+    return func.HttpResponse(f"TXT subido a Drive (ID: {file_id})", status_code=200)
 
-    filename = get_next_filename()
-    drive_file_id = upload_to_drive(txt_content, filename)
+# ─────────────────── 🏃 Ejecutar local para pruebas puntuales ───
+if __name__ == "__main__":
+    hoy = date.today()
+    hace_30_dias = hoy - timedelta(days=30)
+    print("Hoy:", hoy)
+    print("Hace 30 días:", hace_30_dias)
 
-    return func.HttpResponse(
-        f"Archivo {filename} subido a Google Drive (ID: {drive_file_id})",
-        mimetype="text/plain",
-        status_code=200
-    )
+    try:
+        tc = get_exchange_rate_for_date(hace_30_dias)
+        print("TCV hace 30 días:", tc)
+    except RuntimeError as e:
+        print("Error:", e)
