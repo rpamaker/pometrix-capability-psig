@@ -83,7 +83,7 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
     proveedor_inf = f"{proveedor_id} {proveedor_nom}".strip()
 
     buf = io.StringIO()
-    buf.write(f"L|{fecha_str}|GASTO|{tc}\n")
+    buf.write(f"L|{fecha_str}|GASTO|0\n")
     buf.write(f"A|123| |{tc}|-{proveedor_inf}\n")
 
     # 4️⃣ Detalles por linea
