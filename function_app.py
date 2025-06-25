@@ -1,4 +1,4 @@
-# ───────── Versión 26/06/25 – Formato final TXT fijo ─────────
+# ───────── Versión 27/06/25 – TXT fijo sin barra final ─────────
 import azure.functions as func
 import io, re, logging, datetime as dt, json
 from bsp2 import get_exchange_rate_for_date
@@ -23,47 +23,41 @@ drive = build("drive", "v3", credentials=credentials)
 FIELD_WIDTHS = {
     "L": ["tipo", 1, "fecha", 8, "concepto", 6, "nro_asiento", 1],
     "A": ["tipo", 1, "nro_linea", 6, "espacio_fijo", 1,
-          "importe", 12, "detalle", 45],           # importe → 12
+          "importe", 12, "detalle", 45],
     "R": ["tipo", 1, "cuenta", 6, "descripcion", 30, "debe_haber", 1,
           "monto", 13, "espacio_1", 13, "centro_costo", 6,
           "espacio_2", 6, "espacio_final", 8],
 }
 
 # ───────── Helpers formato ─────────
-def num_str(value: float, *, decimals: int = 2) -> str:
-    """
-    Convierte 1234.56  →  123456   (quitando punto decimal, redondeo a 'decimals').
-    """
-    factor = 10 ** decimals
-    return str(int(round(value * factor, 0)))
+def num_str(val: float, *, decimals: int = 2) -> str:
+    """1234.56 → '123456' (últimos 2 dígitos son decimales)."""
+    return str(int(round(val * (10**decimals))))
 
-def tc_str(value: float) -> str:
-    """
-    Tipo de cambio: quita el punto y agrega '0000' al final.
-    41.95 → '4195' + '0000' -> '41950000'
-    """
-    return num_str(value, decimals=2) + "0000"
+def tc_str(val: float) -> str:
+    """41.95 → '41950000' (sin punto + '0000')."""
+    return num_str(val) + "0000"
 
-def fmt(val, length, *, align="left"):
+def fmt(val, length: int, *, align: str = "left") -> str:
     if val is None:
         val = ""
     if isinstance(val, float):
-        val = num_str(val)            # por defecto 2 decimales quitados
+        val = num_str(val)
     val = str(val)
     if len(val) > length:
         val = val[:length]
     pad = " " * (length - len(val))
     return pad + val if align == "right" else val + pad
 
-def build_line(line_type: str, include_bar: bool = True, **kwargs) -> str:
+def build_line(line_type: str, **kwargs) -> str:
     schema = FIELD_WIDTHS[line_type]
-    parts  = []
+    out = []
     for i in range(0, len(schema), 2):
         name, width = schema[i], schema[i + 1]
-        align = "right" if name in {"importe", "monto", "nro_linea",
-                                    "nro_asiento"} else "left"
-        parts.append(fmt(kwargs.get(name, ""), width, align=align))
-    return "|".join(parts) + ("\n" if not include_bar else "|\n")
+        align = "right" if name in {"importe", "monto",
+                                    "nro_linea", "nro_asiento"} else "left"
+        out.append(fmt(kwargs.get(name, ""), width, align=align))
+    return "|".join(out) + "\n"          # ← sin barra final
 
 # ───────── Google Drive utils ─────────
 def next_filename() -> str:
@@ -84,14 +78,14 @@ def upload_to_drive(name: str, content: str) -> str:
 # ───────── Constantes ─────────
 CURRENCY_USD_CODES = {"USD", "US$", "DOL", "DÓLAR"}
 
-# ───────── HTTP trigger ─────────
+# ───────── HTTP Trigger ─────────
 @app.route(route="http_trigger")
 def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("🟢 Pometrix TXT generator invoked")
 
     try:
-        data = req.get_json()
-        posting = data.get("posting", [])
+        body = req.get_json()
+        posting = body.get("posting", [])
     except ValueError:
         return func.HttpResponse("Invalid JSON", status_code=400)
     if not posting:
@@ -104,7 +98,7 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("Fecha inválida (YYYY-MM-DD)", status_code=400)
 
     try:
-        tc_val = get_exchange_rate_for_date(fecha_dt)  # float
+        tc_val = get_exchange_rate_for_date(fecha_dt)
     except RuntimeError as err:
         return func.HttpResponse(f"Error TC: {err}", status_code=502)
 
@@ -114,44 +108,40 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
 
     buf = io.StringIO()
 
-    # Línea L  (sin barra final)
+    # L
     buf.write(build_line("L",
-                         include_bar=False,
                          tipo="L",
                          fecha=fecha_str.replace("-", ""),
                          concepto="GASTOS",
                          nro_asiento="0"))
 
-    # Línea A  (sin barra final)
+    # A
     buf.write(build_line("A",
-                         include_bar=False,
                          tipo="A",
                          nro_linea="1",
                          espacio_fijo=" ",
                          importe=tc_str(tc_val),
                          detalle=f"- {prov_inf}"))
 
-    # Líneas R  (con barra final)
+    # R
     for item in posting:
         moneda = (item.get("moneda") or "UYU").upper()
         monto  = float(item.get("Monto", 0))
         if moneda in CURRENCY_USD_CODES:
-            monto *= tc_val                      # pasa a UYU
+            monto *= tc_val
 
-        buf.write(build_line(
-            "R",
-            tipo="R",
-            cuenta=item.get("Cuenta", ""),
-            descripcion=item.get("Descripcion", "").replace("\n", " "),
-            debe_haber=item.get("D/H", "D"),
-            monto=num_str(monto),                # sin separador, 2 dec.
-            espacio_1="",
-            centro_costo=item.get("centroDeCosto", ""),
-            espacio_2="",
-            espacio_final=""
-        ))
+        buf.write(build_line("R",
+                             tipo="R",
+                             cuenta=item.get("Cuenta", ""),
+                             descripcion=item.get("Descripcion", "").replace("\n", " "),
+                             debe_haber=item.get("D/H", "D"),
+                             monto=num_str(monto),
+                             espacio_1="",
+                             centro_costo=item.get("centroDeCosto", ""),
+                             espacio_2="",
+                             espacio_final=""))
 
-    # subir el TXT a Drive
+    # subir a Drive
     try:
         file_id = upload_to_drive(next_filename(), buf.getvalue())
     except Exception as e:
@@ -159,12 +149,10 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("Error al subir a Drive", status_code=500)
 
     return func.HttpResponse(
-        json.dumps({
-            "ok": True,
-            "fileId": file_id,
-            "tipoCambioUSD": tc_val,
-            "lineas": len(posting)
-        }),
+        json.dumps({"ok": True,
+                    "fileId": file_id,
+                    "tipoCambioUSD": tc_val,
+                    "lineas": len(posting)}),
         status_code=200,
-        mimetype="application/json",
+        mimetype="application/json"
     )
