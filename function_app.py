@@ -1,6 +1,7 @@
-# ───────── Versión 27/06/25 – TXT fijo sin barra final ─────────
+# ───────── Versión 27/06/25 – TXT fijo sin barra final (ajustada) ─────────
 import azure.functions as func
 import io, re, logging, datetime as dt, json
+
 from bsp2 import get_exchange_rate_for_date
 
 from google.oauth2 import service_account
@@ -23,7 +24,7 @@ drive = build("drive", "v3", credentials=credentials)
 FIELD_WIDTHS = {
     "L": ["tipo", 1, "fecha", 8, "concepto", 6, "nro_asiento", 1],
     "A": ["tipo", 1, "nro_linea", 6, "espacio_fijo", 1,
-          "importe", 12, "detalle", 45],
+          "importe", 10, "detalle", 45],
     "R": ["tipo", 1, "cuenta", 6, "descripcion", 30, "debe_haber", 1,
           "monto", 13, "espacio_1", 13, "centro_costo", 6,
           "espacio_2", 6, "espacio_final", 8],
@@ -65,7 +66,7 @@ def next_filename() -> str:
     files = drive.files().list(q=q, fields="files(name)", pageSize=1000).execute()
     nums = [int(m.group(1))
             for f in files.get("files", [])
-            if (m := re.search(r"Fact(\d{4})\.txt$", f["name"]))]
+            if (m := re.search(r"Fact(\d{4})\.txt$", f["name"]))]  # noqa: E501
     return f"Fact{(max(nums) + 1 if nums else 1):04d}.txt"
 
 def upload_to_drive(name: str, content: str) -> str:
@@ -91,6 +92,8 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
     if not posting:
         return func.HttpResponse("Payload mal formado", status_code=400)
 
+    # ── datos generales ──
+    numero_factura = str(posting[0].get("numero", "")).strip()
     fecha_str = posting[0].get("fecha", dt.date.today().isoformat())
     try:
         fecha_dt = dt.datetime.strptime(fecha_str, "%Y-%m-%d").date()
@@ -102,28 +105,31 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
     except RuntimeError as err:
         return func.HttpResponse(f"Error TC: {err}", status_code=502)
 
-    prov_id  = posting[0].get("proveedor id", "000000")
     prov_nom = posting[0].get("proveedor nombre", "SIN NOMBRE").replace("\n", " ")
-    prov_inf = f"{prov_id} {prov_nom}".strip()
 
     buf = io.StringIO()
 
-    # L
+    # ───────── Línea L ─────────
     buf.write(build_line("L",
                          tipo="L",
                          fecha=fecha_str.replace("-", ""),
                          concepto="GASTOS",
                          nro_asiento="0"))
 
-    # A
-    buf.write(build_line("A",
-                         tipo="A",
-                         nro_linea="1",
-                         espacio_fijo=" ",
-                         importe=tc_str(tc_val),
-                         detalle=f"- {prov_inf}"))
+    # ───────── Línea A ─────────
+    buf.write(build_line(
+        "A",
+        tipo="A",
+        nro_linea=numero_factura,
+        espacio_fijo=" ",
+        importe=tc_str(tc_val),
+        # ------------- CAMBIO -------------
+        # Antes: "Nro Doc {numero_factura} - {prov_id} {prov_nom}"
+        # Ahora: "EF.{numero_factura} {prov_nom}"
+        detalle=f"EF.{numero_factura} {prov_nom}"
+    ))
 
-    # R
+    # ───────── Líneas R ─────────
     for item in posting:
         moneda = (item.get("moneda") or "UYU").upper()
         monto  = float(item.get("Monto", 0))
@@ -141,7 +147,7 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
                              espacio_2="",
                              espacio_final=""))
 
-    # subir a Drive
+    # ── subir a Drive ──
     try:
         file_id = upload_to_drive(next_filename(), buf.getvalue())
     except Exception as e:
@@ -149,10 +155,12 @@ def http_trigger(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("Error al subir a Drive", status_code=500)
 
     return func.HttpResponse(
-        json.dumps({"ok": True,
-                    "fileId": file_id,
-                    "tipoCambioUSD": tc_val,
-                    "lineas": len(posting)}),
+        json.dumps({
+            "ok": True,
+            "fileId": file_id,
+            "tipoCambioUSD": tc_val,
+            "lineas": len(posting)
+        }),
         status_code=200,
         mimetype="application/json"
     )
